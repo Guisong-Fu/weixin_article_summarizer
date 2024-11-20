@@ -7,7 +7,7 @@ import json
 load_dotenv()
 
 NOTION_TOKEN = os.getenv('NOTION_TOKEN')
-DATABASE_ID = os.getenv('DATABASE_ID')
+DATABASE_ID = os.getenv('SOURCE_DATABASE_ID')
 
 # Initialize Notion client
 notion = Client(auth=NOTION_TOKEN)

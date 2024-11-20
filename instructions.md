@@ -83,88 +83,6 @@ The system comprises the following components:
 * LLM Handler: Manages interactions with different LLMs via LangChain.
 * Logging and Monitoring Module: Uses LangSmith for observability and logging.
 
-## 5.2. Architecture Diagram
-+---------------------+
-|                     |
-|    Manual Trigger   |
-|  (User runs app.py)|
-|                     |
-+----------+----------+
-           |
-           v
-+----------+----------+
-|                     |
-| Configuration &     |
-| Environment Setup   |
-| (Load .env file)    |
-|                     |
-+----------+----------+
-           |
-           v
-+----------+----------+
-|                     |
-|   Notion API Client |
-|                     |
-+----+---------+------+
-     |         |
-     |         |
-     v         v
-+----+----+ +--+-----+
-|         | |        |
-|  Data   | |  Data  |
-| Retrieval| | Update|
-|  Module | | Module |
-|         | |        |
-+----+----+ +----+---+
-     |           |
-     |           |
-     v           v
-+----+-----------+---+
-|                    |
-|   Article Data     |
-|       Model        |
-|    (Article obj)   |
-|                    |
-+----+-----------+---+
-     |            |
-     |            |
-     v            v
-+----+-----------+---+
-|                    |
-|   Processing Module|
-| (Title Gen, Summ,  |
-|  Rewrite, Tagging) |
-|                    |
-+----+-----------+---+
-     |            |
-     |            |
-     v            v
-+----+-----------+---+
-|                    |
-|     LLM Handler    |
-|  (OpenAI, Ollama)  |
-|                    |
-+----+-----------+---+
-     |            |
-     |            |
-     v            v
-+----+-----------+---+
-|                    |
-|    Prompts Module  |
-|  (Prompt Templates)|
-|                    |
-+----+-----------+---+
-     |
-     v
-+----+-----------+---+
-|                    |
-| Logging & Monitoring|
-|    (LangSmith)     |
-|                    |
-+--------------------+
-
-
-# this should be detailed out -> 
 
 # 6. Python Packages & Dependencies
 Python Packages:
@@ -178,10 +96,7 @@ Please feel free to suggest more packages if needed.
 
 # 7. Implementation Plan
 
-
-
-
-## 7.1. Code Structure
+## 7.1.1 Code Structure
 * app.py: Entry point of the application.
 * article.py: Contains the Article data model.
 * notion_client.py: Handles interactions with the Notion API.
@@ -189,6 +104,435 @@ Please feel free to suggest more packages if needed.
 * llm_handler.py: Manages LLM initialization and switching.
 * prompts.py: Stores prompt templates.
 * utils.py: Utility functions.
+
+## 7.1.2 Project Structure
+
+project/
+├── app.py
+├── llm_handler.py
+├── utils.py
+├── processing.py
+├── notion_client.py
+├── article.py
+├── prompts.py
+├── .env
+└── pyproject.toml
+
+## 7.2. Implementation Details
+
+### 7.2.1. Interact with Notion via Notion API, `notion_client.py`
+- Connect to Notion database(`SOURCE_DATABASE_ID` from `.env`), search for articles(pages) available in that database
+- Write back to another Notion database(`DESTINATION_DATABASE_ID` from `.env`)
+- here is some sample code, and you can also take a look at  `inspect_notion_database.py`
+
+```python
+# notion_client.py
+
+from notion_client import Client
+from article import Article
+from typing import List
+import time
+
+def get_page_blocks(notion: Client, page_id: str) -> List[dict]:
+    """
+    Retrieves all blocks (content elements) from a Notion page.
+
+    Args:
+        notion (Client): The Notion client instance.
+        page_id (str): The ID of the Notion page.
+
+    Returns:
+        List[dict]: A list of block objects from the page.
+    """
+    blocks = []
+    has_more = True
+    next_cursor = None
+
+    while has_more:
+        response = notion.blocks.children.list(
+            block_id=page_id,
+            start_cursor=next_cursor
+        )
+        blocks.extend(response['results'])
+        has_more = response.get('has_more', False)
+        next_cursor = response.get('next_cursor', None)
+
+        # Notion API rate limit handling
+        time.sleep(0.2)
+
+    return blocks
+
+def fetch_articles(notion: Client, database_id: str) -> List[Article]:
+    """
+    Fetches articles from a Notion database and converts them into Article objects.
+
+    Args:
+        notion (Client): The Notion client instance.
+        database_id (str): The ID of the Notion database.
+
+    Returns:
+        List[Article]: A list of Article objects.
+    """
+    articles = []
+    has_more = True
+    next_cursor = None
+
+    while has_more:
+        response = notion.databases.query(
+            database_id=database_id,
+            start_cursor=next_cursor
+        )
+        pages = response['results']
+        for page in pages:
+            page_id = page['id']
+            title_property = page['properties'].get('Name', {}).get('title', [])
+            title = title_property[0]['plain_text'] if title_property else 'Untitled'
+            properties = page['properties']
+            content_blocks = get_page_blocks(notion, page_id)
+            article = Article(
+                page_id=page_id,
+                title=title,
+                properties=properties,
+                content_blocks=content_blocks
+            )
+            articles.append(article)
+        has_more = response.get('has_more', False)
+        next_cursor = response.get('next_cursor', None)
+
+        # Notion API rate limit handling
+        time.sleep(0.2)
+
+    return articles
+
+def update_page_properties(notion: Client, article: Article):
+    """
+    Updates the properties of a Notion page (article).
+
+    Args:
+        notion (Client): The Notion client instance.
+        article (Article): The Article object with updated properties.
+    """
+    properties = {
+        'Name': {
+            'title': [
+                {
+                    'text': {
+                        'content': article.title
+                    }
+                }
+            ]
+        },
+        'Summary': {
+            'rich_text': [
+                {
+                    'text': {
+                        'content': article.properties.get('Summary', '')
+                    }
+                }
+            ]
+        },
+        'Tags': {
+            'multi_select': [{'name': tag} for tag in article.properties.get('Tags', [])]
+        }
+    }
+    try:
+        notion.pages.update(page_id=article.page_id, properties=properties)
+    except Exception as e:
+        print(f"Error updating properties for page {article.page_id}: {e}")
+
+def update_page_content(notion: Client, article: Article):
+    """
+    Updates the content blocks of a Notion page while preserving the order of texts and images.
+
+    Args:
+        notion (Client): The Notion client instance.
+        article (Article): The Article object with updated content_blocks.
+    """
+    # Fetch existing blocks
+    existing_blocks = get_page_blocks(notion, article.page_id)
+
+    # Delete existing blocks
+    for block in existing_blocks:
+        try:
+            notion.blocks.delete(block_id=block['id'])
+            time.sleep(0.2)  # Notion API rate limit handling
+        except Exception as e:
+            print(f"Error deleting block {block['id']}: {e}")
+
+    # Add new blocks
+    # Notion API allows adding up to 100 blocks at a time
+    blocks_to_add = article.content_blocks
+    for i in range(0, len(blocks_to_add), 100):
+        chunk = blocks_to_add[i:i+100]
+        try:
+            notion.blocks.children.append(
+                block_id=article.page_id,
+                children=chunk
+            )
+            time.sleep(0.2)  # Notion API rate limit handling
+        except Exception as e:
+            print(f"Error adding blocks to page {article.page_id}: {e}")
+```
+
+### 7.2.1. Manage LLM related configuration, `llm_handler.py`
+- initialize configuration for LLM
+- Use Langchain
+- Here is some sample code
+
+```python
+# llm_handler.py
+
+import os
+from dotenv import load_dotenv
+from langchain.llms import OpenAI
+from langchain.callbacks import LangSmithCallbackHandler
+from custom_llms import OllamaLLM  # Custom LLM wrapper for Ollama
+
+def initialize_llm():
+    """
+    Initializes the LLM based on the LLM_PROVIDER environment variable.
+    Supports 'openai' and 'ollama'.
+
+    Returns:
+        llm: An instance of an LLM compatible with LangChain.
+    """
+    # Load environment variables
+    load_dotenv()
+    llm_provider = os.getenv('LLM_PROVIDER', 'openai').lower()
+
+    if llm_provider == 'openai':
+        # Initialize OpenAI LLM
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not set in the environment variables.")
+
+        llm = OpenAI(
+            api_key=openai_api_key,
+            model_name='gpt-3.5-turbo',
+            callbacks=[LangSmithCallbackHandler()],
+            temperature=0.7
+        )
+        print("Initialized OpenAI LLM.")
+        return llm
+
+    elif llm_provider == 'ollama':
+        # Initialize custom Ollama LLM
+        llm = OllamaLLM(
+            model_name='qwen',  # Replace with your desired model
+            base_url='http://localhost:11434',
+            temperature=0.7,
+            callbacks=[LangSmithCallbackHandler()]
+        )
+        print("Initialized Ollama LLM with model 'qwen'.")
+        return llm
+
+    else:
+        raise ValueError(f"Unsupported LLM_PROVIDER '{llm_provider}'. Please use 'openai' or 'ollama'.")
+```
+
+### 7.2.3 process each block, `processing`
+
+Here is some sample code
+
+```python
+# processing.py
+
+from langchain import LLMChain
+from prompts import title_prompt, summary_prompt, rewrite_prompt, tagging_prompt
+from typing import List
+from article import Article
+
+def generate_title(llm, content: str) -> str:
+    """
+    Generates a new title for the article content using the LLM.
+
+    Args:
+        llm: The language model instance.
+        content (str): The full text content of the article.
+
+    Returns:
+        str: The generated title.
+    """
+    chain = LLMChain(llm=llm, prompt=title_prompt)
+    title = chain.run(content).strip()
+    return title
+
+def generate_summary(llm, content: str) -> str:
+    """
+    Generates a summary for the article content using the LLM.
+
+    Args:
+        llm: The language model instance.
+        content (str): The full text content of the article.
+
+    Returns:
+        str: The generated summary.
+    """
+    chain = LLMChain(llm=llm, prompt=summary_prompt)
+    summary = chain.run(content).strip()
+    return summary
+
+def rewrite_paragraph(llm, paragraph: str) -> str:
+    """
+    Rewrites a paragraph to be shorter without losing information.
+
+    Args:
+        llm: The language model instance.
+        paragraph (str): The paragraph text to rewrite.
+
+    Returns:
+        str: The rewritten paragraph.
+    """
+    chain = LLMChain(llm=llm, prompt=rewrite_prompt)
+    rewritten_paragraph = chain.run(paragraph).strip()
+    return rewritten_paragraph
+
+def generate_tags(llm, content: str) -> List[str]:
+    """
+    Generates tags for the article content using the LLM.
+
+    Args:
+        llm: The language model instance.
+        content (str): The full text content of the article.
+
+    Returns:
+        List[str]: A list of tags assigned to the article.
+    """
+    chain = LLMChain(llm=llm, prompt=tagging_prompt)
+    tags_response = chain.run(content)
+    # Extract tags from the response
+    tags = [tag.strip() for tag in tags_response.split('\n') if tag.strip().startswith('#')]
+    return tags
+
+def process_article(article: Article, llm) -> Article:
+    """
+    Processes an article by generating a new title, summary, rewritten content, and tags.
+
+    Args:
+        article (Article): The article object to process.
+        llm: The language model instance.
+
+    Returns:
+        Article: The updated article object with new title, summary, content, and tags.
+    """
+    # Combine text content from content blocks
+    content = ''
+    for block in article.content_blocks:
+        if block['type'] == 'paragraph':
+            texts = block['paragraph']['text']
+            paragraph_text = ''.join([text['plain_text'] for text in texts])
+            content += paragraph_text + '\n'
+        # You can include other block types if necessary
+
+    # Generate new title
+    new_title = generate_title(llm, content)
+
+    # Generate summary
+    summary = generate_summary(llm, content)
+
+    # Generate tags
+    tags = generate_tags(llm, content)
+
+    # Rewrite content blocks
+    rewritten_blocks = []
+    for block in article.content_blocks:
+        if block['type'] == 'paragraph':
+            texts = block['paragraph']['text']
+            paragraph_text = ''.join([text['plain_text'] for text in texts])
+            rewritten_paragraph = rewrite_paragraph(llm, paragraph_text)
+            # Reconstruct the block with the rewritten text
+            new_block = {
+                'object': 'block',
+                'type': 'paragraph',
+                'paragraph': {
+                    'text': [{
+                        'type': 'text',
+                        'text': {
+                            'content': rewritten_paragraph
+                        }
+                    }]
+                }
+            }
+            rewritten_blocks.append(new_block)
+        else:
+            # Preserve non-paragraph blocks (e.g., images)
+            rewritten_blocks.append(block)
+
+    # Update the article object
+    article.title = new_title
+    article.properties['Summary'] = summary
+    article.properties['Tags'] = tags
+    article.content_blocks = rewritten_blocks
+
+    return article
+```
+
+
+### 7.2.4 `prompts.py`
+
+```python
+# prompts.py
+
+from langchain.prompts import PromptTemplate
+
+# Title Generation Prompt
+title_prompt = PromptTemplate(
+    input_variables=["content"],
+    template="""
+请阅读以下文章内容，并为其生成一个简洁且有意义的标题，使其准确反映文章的主要内容。
+
+文章内容：
+{content}
+
+生成的标题：
+"""
+)
+
+# Summary Generation Prompt
+summary_prompt = PromptTemplate(
+    input_variables=["content"],
+    template="""
+请为以下文章内容生成一段话的摘要，帮助读者快速了解文章的主要内容。
+
+文章内容：
+{content}
+
+摘要：
+"""
+)
+
+# Paragraph Rewriting Prompt
+rewrite_prompt = PromptTemplate(
+    input_variables=["paragraph"],
+    template="""
+请将以下段落改写为更简短的版本，同时确保不丢失任何信息。
+
+原始段落：
+{paragraph}
+
+改写后的段落：
+"""
+)
+
+# Tagging Prompt
+tagging_prompt = PromptTemplate(
+    input_variables=["content"],
+    template="""
+请根据以下文章内容，从预定义的标签列表中选择最合适的标签。预定义标签列表如下：
+
+- #AI
+- #StartUp
+- #Society
+- #Fun
+
+文章内容：
+{content}
+
+选择的标签（仅选择最相关的标签）：
+"""
+)
+```
+
 
 # 8. Testing Plan
 
