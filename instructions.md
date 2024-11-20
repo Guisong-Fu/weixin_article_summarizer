@@ -274,9 +274,9 @@ def update_page_content(notion: Client, article: Article):
             print(f"Error adding blocks to page {article.page_id}: {e}")
 ```
 
-### 7.2.1. Manage LLM related configuration, `llm_handler.py`
+### 7.2.2. Manage LLM related configuration, `llm_handler.py`
 - initialize configuration for LLM
-- Use Langchain
+- Use Langchain & LangSmith for observability
 - Here is some sample code
 
 ```python
@@ -330,9 +330,9 @@ def initialize_llm():
         raise ValueError(f"Unsupported LLM_PROVIDER '{llm_provider}'. Please use 'openai' or 'ollama'.")
 ```
 
-### 7.2.3 process each block, `processing`
-
-Here is some sample code
+### 7.2.3 process each block, `processing.py`
+- Generate title, summary, rewrite content, and tags for each article
+- Here is some sample code
 
 ```python
 # processing.py
@@ -467,8 +467,9 @@ def process_article(article: Article, llm) -> Article:
     return article
 ```
 
-
 ### 7.2.4 `prompts.py`
+- Define prompts for LLM
+- Here is some sample code
 
 ```python
 # prompts.py
@@ -533,213 +534,354 @@ tagging_prompt = PromptTemplate(
 )
 ```
 
+### 7.2.5 `article.py`
+- Define data model for article
+- Here is some sample code
 
-# 8. Testing Plan
-
-## 8.1. Unit Testing
-* Write unit tests for each function in processing.py, notion_client.py, and llm_handler.py.
-* Use a testing framework like pytest.
-
-## 8.2. Integration Testing
-* Test the end-to-end processing of a single article.
-* Verify that the article in Notion is updated correctly.
-
-
-
-
-# 11. Appendices
-
-## Appendix A: Sample Code
-
-## A.1. main.py
 ```python
+# article.py
+
+from dataclasses import dataclass, field
+from typing import List, Dict
+
+@dataclass
+class Article:
+    """
+    A data class representing an article from the Notion database.
+
+    Attributes:
+        page_id (str): The unique identifier of the Notion page.
+        title (str): The title of the article.
+        properties (Dict): A dictionary of the page's properties (e.g., tags, summary).
+        content_blocks (List[Dict]): A list of content blocks (paragraphs, images, etc.) from the page.
+    """
+    page_id: str
+    title: str
+    properties: Dict = field(default_factory=dict)
+    content_blocks: List[Dict] = field(default_factory=list)
+
+    def get_full_content(self) -> str:
+        """
+        Combines all text content from the content blocks into a single string.
+
+        Returns:
+            str: The full text content of the article.
+        """
+        content = ''
+        for block in self.content_blocks:
+            if block['type'] == 'paragraph':
+                texts = block['paragraph']['text']
+                paragraph_text = ''.join([text['plain_text'] for text in texts])
+                content += paragraph_text + '\n'
+            # Include other text-containing blocks if necessary
+        return content.strip()
+
+    def update_content_blocks(self, new_blocks: List[Dict]):
+        """
+        Updates the content blocks of the article.
+
+        Args:
+            new_blocks (List[Dict]): The new list of content blocks.
+        """
+        self.content_blocks = new_blocks
+```
+
+### 7.2.6 `utils.py`
+- Define utility functions
+- Here is some sample code
+
+```python
+# utils.py
+
+import logging
+import time
+import re
+from typing import List, Any, Callable
+from functools import wraps
+
+def setup_logging(log_level=logging.INFO, log_file=None):
+    """
+    Configures logging for the application.
+
+    Args:
+        log_level (int): The logging level (e.g., logging.INFO, logging.DEBUG).
+        log_file (str, optional): The file to which logs should be written. If None, logs are printed to stdout.
+    """
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    if log_file:
+        logging.basicConfig(level=log_level, format=log_format, filename=log_file)
+    else:
+        logging.basicConfig(level=log_level, format=log_format)
+
+def rate_limit(max_per_second):
+    """
+    Decorator to limit the rate of function calls.
+
+    Args:
+        max_per_second (float): The maximum number of function calls per second.
+
+    Returns:
+        Callable: The decorated function with rate limiting applied.
+    """
+    min_interval = 1.0 / float(max_per_second)
+
+    def decorator(func: Callable):
+        last_time_called = [0.0]
+
+        @wraps(func)
+        def rate_limited_function(*args, **kwargs):
+            elapsed = time.perf_counter() - last_time_called[0]
+            left_to_wait = min_interval - elapsed
+            if left_to_wait > 0:
+                time.sleep(left_to_wait)
+            ret = func(*args, **kwargs)
+            last_time_called[0] = time.perf_counter()
+            return ret
+
+        return rate_limited_function
+
+    return decorator
+
+def split_text_by_length(text: str, max_length: int) -> List[str]:
+    """
+    Splits a text into a list of substrings, each with a maximum length.
+
+    Args:
+        text (str): The text to split.
+        max_length (int): The maximum length of each substring.
+
+    Returns:
+        List[str]: A list of substrings.
+    """
+    return [text[i:i+max_length] for i in range(0, len(text), max_length)]
+
+def sanitize_text(text: str) -> str:
+    """
+    Sanitizes text by removing unwanted characters or patterns.
+
+    Args:
+        text (str): The text to sanitize.
+
+    Returns:
+        str: The sanitized text.
+    """
+    # Example: Remove extra whitespace and control characters
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+    return text.strip()
+
+def chunk_list(lst: List[Any], chunk_size: int) -> List[List[Any]]:
+    """
+    Splits a list into smaller lists of a specified maximum size.
+
+    Args:
+        lst (List[Any]): The list to split.
+        chunk_size (int): The maximum size of each chunk.
+
+    Returns:
+        List[List[Any]]: A list of list chunks.
+    """
+    return [lst[i:i+chunk_size] for i in range(0, len(lst), chunk_size)]
+
+def retry_on_exception(max_retries: int, exceptions: Any, delay: float = 0.0):
+    """
+    Decorator to retry a function call upon specified exceptions.
+
+    Args:
+        max_retries (int): Maximum number of retries.
+        exceptions (Exception or Tuple[Exception]): Exceptions to catch and retry upon.
+        delay (float): Delay between retries in seconds.
+
+    Returns:
+        Callable: The decorated function with retry logic applied.
+    """
+    def decorator(func: Callable):
+        @wraps(func)
+        def wrapped_function(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    logging.warning(f"Exception occurred: {e}. Retrying ({retries + 1}/{max_retries})...")
+                    retries += 1
+                    if delay > 0:
+                        time.sleep(delay)
+            # Last attempt
+            return func(*args, **kwargs)
+        return wrapped_function
+    return decorator
+
+def truncate_text(text: str, max_length: int) -> str:
+    """
+    Truncates text to a maximum length, adding an ellipsis if truncated.
+
+    Args:
+        text (str): The text to truncate.
+        max_length (int): The maximum allowed length.
+
+    Returns:
+        str: The truncated text.
+    """
+    if len(text) <= max_length:
+        return text
+    else:
+        return text[:max_length - 3] + '...'
+
+def extract_tags_from_response(response: str) -> List[str]:
+    """
+    Extracts tags from the LLM response.
+
+    Args:
+        response (str): The LLM's response containing tags.
+
+    Returns:
+        List[str]: A list of extracted tags.
+    """
+    # Assume tags are lines starting with '#'
+    tags = [line.strip() for line in response.splitlines() if line.strip().startswith('#')]
+    return tags
+
+def clean_llm_response(response: str) -> str:
+    """
+    Cleans up the LLM's response by removing unnecessary whitespace and artifacts.
+
+    Args:
+        response (str): The raw response from the LLM.
+
+    Returns:
+        str: The cleaned response.
+    """
+    return response.strip()
+```
+
+### 7.2.7 `app.py`
+- Entry point of the application
+- Here is some sample code 
+
+``` python
+# app.py
+
 import os
+import logging
 from dotenv import load_dotenv
 from notion_client import Client
-from langchain import LLMChain
-from langchain.llms import OpenAI
-# from langchain.llms import Ollama  # Uncomment if Ollama integration is available
-from langchain.callbacks import LangSmithCallbackHandler
 from article import Article
-from notion_client_module import fetch_articles, update_page_properties, update_page_content
+from notion_client import fetch_articles, update_page_properties, update_page_content
 from processing import process_article
 from llm_handler import initialize_llm
+from utils import setup_logging
 
 def main():
-    # Load environment variables
+    # Set up logging (logs to console; set log_file parameter to log to a file)
+    setup_logging(log_level=logging.INFO)
+
+    # Load environment variables from .env file
     load_dotenv()
 
-    # Initialize Notion client
-    notion = Client(auth=os.getenv('NOTION_TOKEN'))
-
-    # Initialize LLM
-    llm = initialize_llm()
-
-    # Fetch articles
+    # Retrieve required environment variables
+    notion_token = os.getenv('NOTION_TOKEN')
     database_id = os.getenv('DATABASE_ID')
-    articles = fetch_articles(notion, database_id)
+    if not notion_token or not database_id:
+        logging.error("Environment variables NOTION_TOKEN and DATABASE_ID must be set.")
+        return
 
-    # Process articles
+    # Initialize Notion client
+    notion = Client(auth=notion_token)
+    logging.info("Initialized Notion client.")
+
+    # Initialize Language Model (LLM)
+    try:
+        llm = initialize_llm()
+        logging.info("Initialized LLM.")
+    except Exception as e:
+        logging.error(f"Failed to initialize LLM: {e}")
+        return
+
+    # Fetch articles from Notion database
+    try:
+        articles = fetch_articles(notion, database_id)
+        logging.info(f"Fetched {len(articles)} articles from the database.")
+    except Exception as e:
+        logging.error(f"Failed to fetch articles: {e}")
+        return
+
+    if not articles:
+        logging.info("No articles found to process.")
+        return
+
+    # Process each article
     for article in articles:
         try:
+            logging.info(f"Processing article {article.page_id}...")
+            # Process the article (generate title, summary, rewrite content, generate tags)
             processed_article = process_article(article, llm)
+            # Update the article's properties and content in Notion
             update_page_properties(notion, processed_article)
             update_page_content(notion, processed_article)
-            print(f"Processed article {article.page_id} successfully.")
+            logging.info(f"Successfully processed article {article.page_id}.")
         except Exception as e:
-            print(f"Error processing article {article.page_id}: {e}")
+            logging.error(f"Error processing article {article.page_id}: {e}")
 
 if __name__ == '__main__':
     main()
 ```
-
-## A.2. processing.py
-```python
-from langchain import LLMChain
-from prompts import title_prompt, summary_prompt, rewrite_prompt, tagging_prompt
-
-def generate_title(llm, content):
-    chain = LLMChain(llm=llm, prompt=title_prompt)
-    return chain.run(content).strip()
-
-def generate_summary(llm, content):
-    chain = LLMChain(llm=llm, prompt=summary_prompt)
-    return chain.run(content).strip()
-
-def rewrite_paragraph(llm, paragraph):
-    chain = LLMChain(llm=llm, prompt=rewrite_prompt)
-    return chain.run(paragraph).strip()
-
-def generate_tags(llm, content):
-    chain = LLMChain(llm=llm, prompt=tagging_prompt)
-    tags_response = chain.run(content)
-    tags = [tag.strip() for tag in tags_response.split('\n') if tag.startswith('#')]
-    return tags
-
-def process_article(article, llm):
-    # Combine text content
-    content = ''
-    for block in article.content_blocks:
-        if block['type'] == 'paragraph':
-            texts = block['paragraph']['text']
-            content += ''.join([text['plain_text'] for text in texts]) + '\n'
-
-    # Generate new title
-    new_title = generate_title(llm, content)
-
-    # Generate summary
-    summary = generate_summary(llm, content)
-
-    # Generate tags
-    tags = generate_tags(llm, content)
-
-    # Rewrite content blocks
-    rewritten_blocks = []
-    for block in article.content_blocks:
-        if block['type'] == 'paragraph':
-            texts = block['paragraph']['text']
-            paragraph_text = ''.join([text['plain_text'] for text in texts])
-            rewritten_paragraph = rewrite_paragraph(llm, paragraph_text)
-            new_block = {
-                'object': 'block',
-                'type': 'paragraph',
-                'paragraph': {
-                    'text': [{
-                        'type': 'text',
-                        'text': {
-                            'content': rewritten_paragraph
-                        }
-                    }]
-                }
-            }
-            rewritten_blocks.append(new_block)
-        else:
-            # Preserve non-paragraph blocks
-            rewritten_blocks.append(block)
-
-    # Update the article object
-    article.title = new_title
-    article.properties['Summary'] = summary
-    article.properties['Tags'] = tags
-    article.content_blocks = rewritten_blocks
-
-    return article
 ```
 
-## A.3. prompts.py
-```python
-from langchain.prompts import PromptTemplate
+# 8. Additional Requirements
 
-# Title Generation Prompt
-title_prompt = PromptTemplate(
-    input_variables=["content"],
-    template="""
-请阅读以下文章内容，并为其生成一个简洁且有意义的标题，使其准确反映文章的主要内容。
+## 8.1. Data Model Specifications
+### Source Database Fields
+- Title: Text
+- Content: Rich text blocks including paragraphs and images
+- Original URL: URL
+- Published Date: Date
 
-文章内容：
-{content}
+### Destination Database Fields
+- Title: Text (generated)
+- Summary: Rich text
+- Rewritten Content: Rich text blocks
+- Tags: Multi-select from predefined options
+- Original Article Reference: Relation to source database
+- Processing Status: Select (Pending/Completed/Failed)
 
-生成的标题：
-"""
-)
+## 8.2. Error Handling
+- Implement exponential backoff for API rate limits
+- Retry failed operations up to 3 times
+- Log all errors with stack traces
+- Continue processing remaining articles if one fails
+- Store error status in database for failed articles
 
-# Summary Generation Prompt
-summary_prompt = PromptTemplate(
-    input_variables=["content"],
-    template="""
-请为以下文章内容生成一段话的摘要，帮助读者快速了解文章的主要内容。
+## 8.3. Performance Requirements
+- Process each article within 5 minutes
+- Handle articles up to 10,000 words
+- Implement timeout of 60 seconds for each LLM operation
 
-文章内容：
-{content}
+## 8.4. Testing Requirements
+### 8.4.1. Unit Testing
+* Write unit tests for each function in processing.py, notion_client.py, and llm_handler.py.
+* Use a testing framework like pytest.
 
-摘要：
-"""
-)
+### 8.4.2. Integration Testing
+* Test the end-to-end processing of a single article.
+* Verify that the article in Notion is updated correctly.
 
-# Paragraph Rewriting Prompt
-rewrite_prompt = PromptTemplate(
-    input_variables=["paragraph"],
-    template="""
-请将以下段落改写为更简短的版本，同时确保不丢失任何信息。
 
-原始段落：
-{paragraph}
+### 8.4.3. Quality Validation
+- Generated titles must be under 100 characters
+- Summaries must be one paragraph (150-300 words)
+- Rewritten content must maintain all key information
+- Tags must come from predefined list
 
-改写后的段落：
-"""
-)
+### 8.4.4. Test Cases
+- Short articles (<1000 words)
+- Long articles (>5000 words)
+- Articles with multiple images
+- Articles with special characters/formatting
+- Articles in different writing styles
 
-# Tagging Prompt
-tagging_prompt = PromptTemplate(
-    input_variables=["content"],
-    template="""
-请根据以下文章内容，从预定义的标签列表中选择最合适的标签。预定义标签列表如下：
-
-- #AI
-- #StartUp
-- #Society
-- #Fun
-
-文章内容：
-{content}
-
-选择的标签（仅选择最相关的标签）：
-"""
-)
-```
-
-## Appendix B: Environment Setup Instructions
-
-1. Install Python 3.8+
-```bash
-python3 --version
-```
-
-2. Install Poetry
-```bash
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-3. Clone the Repository
-```bash
-git clone https://github.com/your-repo/article-
+## 8.5. Security
+- Store all API keys in environment variables
+- Log sensitive data only in debug mode
+- Implement API key rotation mechanism
+- Validate all input data before processing
