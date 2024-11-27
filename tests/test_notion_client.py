@@ -1,6 +1,8 @@
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
 from src.weixin_summarizer.notion_client import NotionManager
+from src.weixin_summarizer.article import Article
+from datetime import datetime
 
 @pytest.mark.asyncio
 async def test_fetch_articles():
@@ -43,15 +45,41 @@ async def test_fetch_articles():
         assert articles[0].original_url == "https://example.com"
 
 @pytest.mark.asyncio
-async def test_update_article(sample_article):
-    """Test article updating in Notion."""
-    with patch('src.weixin_summarizer.notion_client.AsyncClient') as MockClient:
-        mock_client = Mock()
-        MockClient.return_value = mock_client
+async def test_create_article():
+    # Setup
+    notion_manager = NotionManager()
+    
+    # Create test article
+    article = Article(
+        page_id="test-page-id",
+        title="Test Article",
+        original_url="https://example.com",
+        published_date=datetime.now().isoformat(),
+        content_blocks=[
+            {"type": "paragraph", "text": "Block 1"},
+            {"type": "paragraph", "text": "Block 2"},
+            # ... add more blocks if needed
+        ]
+    )
+
+    # Mock the Notion API responses
+    with patch.object(notion_manager.client.pages, 'create', new_callable=AsyncMock) as mock_create, \
+         patch.object(notion_manager.client.blocks.children, 'append', new_callable=AsyncMock) as mock_append:
         
-        manager = NotionManager()
-        await manager.update_article(sample_article)
+        # Setup mock return value for page creation
+        mock_create.return_value = {"id": "new-page-id"}
         
-        # Verify that update was called with correct properties
-        mock_client.pages.update.assert_called_once()
-        mock_client.blocks.children.append.assert_called_once() 
+        # Call the function
+        await notion_manager.create_article(article)
+
+        # Verify page creation
+        mock_create.assert_called_once_with(
+            parent={"database_id": notion_manager.dest_db},
+            properties=article.to_notion_properties()
+        )
+
+        # Verify blocks were appended
+        mock_append.assert_called_once_with(
+            block_id="new-page-id",
+            children=article.content_blocks
+        ) 

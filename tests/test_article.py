@@ -1,7 +1,6 @@
-import pytest
-from datetime import datetime
 from src.weixin_summarizer.article import Article
 
+# todo: this is ridiculous.. think if we need it or not
 def test_article_initialization():
     """Test Article class initialization."""
     article = Article(
