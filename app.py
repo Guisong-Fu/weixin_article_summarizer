@@ -33,7 +33,7 @@ async def main(limit: Optional[int] = None):
                 await notion_manager.create_article(processed_article)
 
                 logger.info(f"Archiving original article: {article.title}")
-                await notion_manager.archive_article(article)
+                # await notion_manager.archive_article(article)
 
             except Exception as e:
                 logger.error(f"Error processing article {article.title}: {str(e)}")
