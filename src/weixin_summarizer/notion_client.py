@@ -25,6 +25,8 @@ class NotionManager:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10)
     )
+
+    # todo: double check this, how blocks work
     async def fetch_articles(self, limit: Optional[int] = None) -> List[Article]:
         """Fetches articles from the source database."""
         articles = []

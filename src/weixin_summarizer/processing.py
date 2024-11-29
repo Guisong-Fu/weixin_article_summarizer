@@ -26,6 +26,8 @@ class ArticleProcessor:
 
             # todo: how does this work? Can we use one big prompt and generate all at once?
             # Generate title
+
+            # todo: here: this can be unified!!!!
             article.title = await self.llm.generate_completion(
                 TITLE_PROMPT,
                 {"content": content}
@@ -42,6 +44,8 @@ class ArticleProcessor:
                 TAGGING_PROMPT,
                 {"content": content}
             )
+
+
 
             article.properties["tags"] = self._parse_tags(tags_response)
             
